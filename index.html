@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Two Perfectly Concave Asses</title>
+  <style>
+    :root {
+      /* image sizing for your hotspots */
+      --img-w: 1024;
+      --img-h: 1536;
+      --img-ratio: calc(var(--img-w) / var(--img-h));
+
+      /* laser background customization */
+      --laser-bg: radial-gradient(circle at 50% 50%, #050510 0%, #050510 40%, #000 100%);
+      --laser-speed: 1.0;       /* 0.5 slow … 2.0 fast */
+      --laser-density: 0.9;     /* 0..1 density of beams */
+      --laser-line: 2.0;        /* logical px (scaled by DPR) */
+      --laser-glow: 0.7;        /* 0..1 glow strength */
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      :root { --laser-speed: 0.2; --laser-glow: 0.4; }
+    }
+
+    /* full-viewport canvas behind everything */
+    #laser-canvas {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      background: var(--laser-bg);
+      pointer-events: none; /* don't block clicks */
+    }
+
+    /* your existing layout */
+    body {
+      margin: 0;
+      height: 100vh;
+      width: 100vw;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    .stage {
+      position: relative;
+      width: min(100vw, calc(100vh * var(--img-ratio)));
+      height: min(100vh, calc(100vw / var(--img-ratio)));
+      --btn-scale: 1;
+    }
+
+    .stage img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: fill; 
+      user-select: none;
+      -webkit-user-drag: none;
+      pointer-events: none;
+    }
+
+    .hotspot {
+      position: absolute;
+      transform: translate(-50%, -50%); 
+      border: none;
+      border-radius: 0.8em;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+      font-size: calc(20px * var(--btn-scale));
+      padding: calc(10px * var(--btn-scale)) calc(16px * var(--btn-scale));
+      box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+      white-space: nowrap;
+    }
+
+    .title {
+      font-size: calc(5rem * var(--btn-scale));
+      color:#1077a9;
+      text-shadow: 2px 0 #fff, -2px 0 #fff, 0 2px #fff, 0 -2px #fff,
+             1px 1px #fff, -1px -1px #fff, 1px -1px #fff, -1px 1px #fff;
+      background: transparent;
+      cursor: default;
+    }
+
+    .link {
+      width: calc(200px * var(--btn-scale));
+      height: calc(50px * var(--btn-scale)); 
+      background: #1077a9;
+      color: white;
+      font-size: calc(20px * var(--btn-scale));
+    }
+    .link:hover { background: #fff; color: #1077a9; } /* better contrast on hover */
+  </style>
+</head>
+<body>
+  <!-- Laser background -->
+  <canvas id="laser-canvas" aria-hidden="true"></canvas>
+
+  <!-- Foreground content -->
+  <div class="stage" id="stage">
+    <img src="img.png" alt="Two Concave Asses"/>
+    <h1 class="hotspot title" data-x="0.5" data-y="0.3">404 | Asses Not Found!</h1>
+    <a href="https://v2productionsllc.com">
+      <button class="hotspot link" data-x="0.35" data-y="0.78">Go Home</button>
+    </a>
+    <a href="https://v2productionsllc.com">
+      <button class="hotspot link" data-x="0.70" data-y="0.80">Go Home</button>
+    </a>
+  </div>
+
+  <script>
+    /* ---------- hotspot layout (your existing logic) ---------- */
+    function layoutHotspots() {
+      const stage = document.getElementById('stage');
+      const hotspots = stage.querySelectorAll('.hotspot');
+      const stageRect = stage.getBoundingClientRect();
+      const baseImgWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--img-w')) || 1024;
+      const scale = stageRect.width / baseImgWidth;
+      stage.style.setProperty('--btn-scale', scale.toString());
+
+      hotspots.forEach(btn => {
+        const x = parseFloat(btn.dataset.x);
+        const y = parseFloat(btn.dataset.y);
+        btn.style.left = (x * 100) + '%';
+        btn.style.top  = (y * 100) + '%';
+      });
+    }
+    window.addEventListener('load', layoutHotspots);
+    window.addEventListener('resize', layoutHotspots);
+    window.addEventListener('orientationchange', layoutHotspots);
+
+    /* ---------- laser background ---------- */
+    (() => {
+      const canvas = document.getElementById('laser-canvas');
+      const ctx = canvas.getContext('2d', { alpha: false }); // opaque for speed
+      let dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1)); // cap DPR for perf
+      let beams = [];
+      let running = true;
+      let lastT = performance.now();
+
+      // palette of laser colors
+      const COLORS = [
+        '#4EF3FF', // cyan
+        '#7CFF4E', // green
+        '#FF4EE1', // magenta
+        '#FFDF4E', // yellow
+        '#4E73FF'  // blue
+      ];
+
+      function resize() {
+        dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+        const { width, height } = canvas.getBoundingClientRect();
+        canvas.width = Math.max(1, Math.floor(width * dpr));
+        canvas.height = Math.max(1, Math.floor(height * dpr));
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // logical pixels
+        // regenerate beams to fit space
+        initBeams();
+      }
+
+      function cssVar(name, fallback) {
+        const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+        return v || fallback;
+      }
+
+      function initBeams() {
+        const w = canvas.width / dpr;
+        const h = canvas.height / dpr;
+        const density = parseFloat(cssVar('--laser-density', '0.9'));
+        const count = Math.max(6, Math.floor((w + h) / 220 * density));
+        beams = [];
+        for (let i = 0; i < count; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = (0.12 + Math.random() * 0.45) * parseFloat(cssVar('--laser-speed', '1'));
+          beams.push({
+            // start near center, fan outward
+            x: Math.random() * w,
+            y: Math.random() * h,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            len: Math.max(w, h) * (0.35 + Math.random() * 0.45),
+            hue: COLORS[i % COLORS.length],
+            wobble: (Math.random() * 0.6 + 0.2) * (Math.random() < 0.5 ? 1 : -1),
+            t: Math.random() * 1000
+          });
+        }
+      }
+
+      function step(now) {
+        if (!running) return;
+        const dt = Math.min(33, now - lastT); // clamp delta for stability
+        lastT = now;
+
+        const w = canvas.width / dpr;
+        const h = canvas.height / dpr;
+
+        // background
+        // The CSS background already paints under the canvas element; we’ll also
+        // clear here to avoid trails.
+        ctx.clearRect(0, 0, w, h);
+
+        // draw beams
+        const lineBase = parseFloat(cssVar('--laser-line', '2.0'));
+        const glow = parseFloat(cssVar('--laser-glow', '0.7'));
+        ctx.globalCompositeOperation = 'lighter';
+
+        for (const b of beams) {
+          // animate wobble for a subtle oscillation
+          b.t += dt * 0.001 * parseFloat(cssVar('--laser-speed', '1'));
+          const wob = Math.sin(b.t * 2.2) * b.wobble;
+
+          // endpoints
+          const nx = b.vx + Math.cos(b.t * 0.9) * wob;
+          const ny = b.vy + Math.sin(b.t * 0.9) * wob;
+
+          const x2 = b.x + nx * b.len;
+          const y2 = b.y + ny * b.len;
+
+          // draw with glow
+          ctx.lineCap = 'round';
+          ctx.shadowColor = b.hue;
+          ctx.shadowBlur = 14 * glow;
+          ctx.lineWidth = lineBase;
+
+          // core
+          ctx.beginPath();
+          ctx.strokeStyle = b.hue + 'E6'; // a bit transparent
+          ctx.moveTo(b.x, b.y);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+
+          // faint outer pass for bloom
+          ctx.shadowBlur = 30 * glow;
+          ctx.lineWidth = lineBase * 0.6;
+          ctx.strokeStyle = b.hue + '66';
+          ctx.stroke();
+
+          // move beam origin, bounce off edges for energy
+          b.x += b.vx * dt;
+          b.y += b.vy * dt;
+
+          if (b.x < -50 || b.x > w + 50) b.vx *= -1;
+          if (b.y < -50 || b.y > h + 50) b.vy *= -1;
+        }
+
+        ctx.globalCompositeOperation = 'source-over';
+        requestAnimationFrame(step);
+      }
+
+      // init
+      resize();
+      window.addEventListener('resize', resize);
+      window.addEventListener('orientationchange', resize);
+
+      // pause/resume API if you ever need it:
+      window.lasers = {
+        pause() { running = false; },
+        resume() { if (!running) { running = true; lastT = performance.now(); requestAnimationFrame(step); } },
+        setSpeed(v) { document.documentElement.style.setProperty('--laser-speed', String(v)); initBeams(); },
+        setDensity(v) { document.documentElement.style.setProperty('--laser-density', String(v)); initBeams(); },
+        setGlow(v) { document.documentElement.style.setProperty('--laser-glow', String(v)); },
+        setLine(v) { document.documentElement.style.setProperty('--laser-line', String(v)); initBeams(); }
+      };
+
+      // honor reduced motion by starting slower (CSS) and allowing pause
+      const prefersReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (prefersReduced) {
+        // you can also auto-pause if you prefer:
+        // running = false;
+      }
+
+      requestAnimationFrame(step);
+    })();
+  </script>
+</body>
+</html>
